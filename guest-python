@@ -1,0 +1,95 @@
+# --- Celdas para Google Colab ---
+
+# 1. Instala pytz si es necesario
+!pip install pytz
+
+# 2. Sube tu archivo GUEST
+from google.colab import files
+uploaded = files.upload()
+
+# 3. Script de procesamiento
+import datetime
+import pytz
+
+# Configuración
+START_TIME = '17:20'
+END_TIME = '01:17'
+START_DATE = '2025-05-21'  # Cambia si quieres otra fecha
+TZ = pytz.timezone('America/Mexico_City')  # GMT-5/CDT
+
+# Lee el archivo subido
+import io
+for fn in uploaded.keys():
+    filename = fn
+with io.open(filename, encoding='utf8') as f:
+    lines = [l.rstrip('\n') for l in f if l.strip()]
+
+def parse_tracks(lines):
+    tracks = []
+    temp = []
+    for line in lines:
+        if line.startswith('#EXTVDJ:'):
+            if temp:
+                tracks.append(temp)
+                temp = []
+            temp.append(line)
+        else:
+            temp.append(line)
+    if temp:
+        tracks.append(temp)
+    return tracks
+
+def build_times(num_tracks, start_datetime, end_datetime):
+    total_seconds = (end_datetime - start_datetime).total_seconds()
+    intervals = int(total_seconds // max(1, num_tracks-1))
+    times = []
+    for i in range(num_tracks):
+        current_time = start_datetime + datetime.timedelta(seconds=i*intervals)
+        times.append(current_time)
+    return times
+
+def patch_track(track, play_time):
+    # Formato: #EXTVDJ:...<songlength>XXX</songlength>
+    import re
+    extvdj = track[0]
+    # Extraer songlength
+    match = re.search(r'<songlength>([\d.]+)</songlength>', extvdj)
+    songlen = float(match.group(1)) if match else 180
+    # Formato de hora <time>HH:MM</time>
+    time_str = play_time.strftime('%H:%M')
+    # Unix timestamp GMT-5
+    lastplaytime = int(play_time.timestamp())
+    # Quitar <time> y <lastplaytime> previos si existen
+    extvdj = re.sub(r'<time>.*?</time>', '', extvdj)
+    extvdj = re.sub(r'<lastplaytime>.*?</lastplaytime>', '', extvdj)
+    # Insertar al inicio después de #EXTVDJ:
+    after_extvdj = extvdj[len('#EXTVDJ:'):]
+    new_extvdj = f"#EXTVDJ:<time>{time_str}</time><lastplaytime>{lastplaytime}</lastplaytime>{after_extvdj}"
+    return [new_extvdj, track[1]]
+
+# Procesar
+tracks = parse_tracks(lines)
+num_tracks = len(tracks)
+
+start_dt = TZ.localize(datetime.datetime.strptime(f"{START_DATE} {START_TIME}", "%Y-%m-%d %H:%M"))
+end_dt = TZ.localize(datetime.datetime.strptime(f"{START_DATE} {END_TIME}", "%Y-%m-%d %H:%M"))
+if end_dt <= start_dt:
+    end_dt += datetime.timedelta(days=1)
+
+play_times = build_times(num_tracks, start_dt, end_dt)
+
+new_lines = []
+for i, track in enumerate(tracks):
+    new_track = patch_track(track, play_times[i])
+    new_lines.extend(new_track)
+
+# 4. Guardar el archivo modificado
+output_filename = "GUEST_OUT.txt"
+with open(output_filename, 'w', encoding='utf-8') as f:
+    for line in new_lines:
+        f.write(line + '\n')
+
+print(f"Archivo procesado: {output_filename}")
+
+# 5. Descargar el archivo
+files.download(output_filename)
